@@ -1,80 +1,99 @@
-import argparse
-import os
-import sys
+from fastapi import APIRouter, FastAPI, File, Form, UploadFile, HTTPException
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
-
-from torchvision.utils import save_image
-from tqdm.auto import tqdm
-
 from hair_swap import HairFast, get_parser
+import torchvision.transforms as T
+import torch
+from PIL import Image
+import io
+import uvicorn
 
+app = FastAPI(
+        docs_url="/api/docs",
+        openapi_url="/api/docs/openapi.json",
+        redoc_url=None
+    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-def main(model_args, args):
-    hair_fast = HairFast(model_args)
+app.mount("/api/ref_img", StaticFiles(directory="ref_img"), name="img")
+# Danh sách ảnh có sẵn
 
-    experiments: list[str | tuple[str, str, str]] = []
-    if args.file_path is not None:
-        with open(args.file_path, 'r') as file:
-            experiments.extend(file.readlines())
+list_style_hair = [
+    {"id": 0, "name": "Den", "url": "ref_img/den.jpg"},
+    {"id": 1, "name": "Kid", "url": "ref_img/Kid.jpg"},
+    {"id": 2, "name": "Layer", "url": "ref_img/Layer.jpg"},
+    {"id": 3, "name": "Nau_socola", "url": "ref_img/Nau_socola.jpg"},
+    {"id": 4, "name": "nhuomden", "url": "ref_img/nhuomden.jpg"},
+    {"id": 5, "name": "Pompadour", "url": "ref_img/Pompadour.jpg"},
+    {"id": 6, "name": "sidepart_1", "url": "ref_img/sidepart_1.jpg"},
+    {"id": 7, "name": "sidepart_2", "url": "ref_img/sidepart_2.jpg"},
+    {"id": 8, "name": "sidepart_3", "url": "ref_img/sidepart_3.jpg"},
+    {"id": 9, "name": "sidepart_4", "url": "ref_img/sidepart_4.jpg"},
+    {"id": 10, "name": "sidepart_5", "url": "ref_img/sidepart_5.jpg"},
+    {"id": 11, "name": "sidepart_6", "url": "ref_img/sidepart_6.jpg"},
+    {"id": 12, "name": "xamkhoi", "url": "ref_img/xamkhoi.jpg"},
+    {"id": 13, "name": "xamkhoi2", "url": "ref_img/xamkhoi2.jpg"},
+    {"id": 14, "name": "Xanh_blue", "url": "ref_img/Xanh_blue.jpg"},
+    {"id": 15, "name": "Xoanlayer", "url": "ref_img/Xoanlayer.jpg"},
+    {"id": 16, "name": "Ivy", "url": "ref_img/Ivy.jpg"},
+    {"id": 17, "name": "kieu-toc-short-quiff-12", "url": "ref_img/kieu-toc-short-quiff-12.jpg"},
+    {"id": 18, "name": "Middle", "url": "ref_img/Middle.jpg"},
+    {"id": 19, "name": "Nau_tay", "url": "ref_img/Nau_tay.jpg"},
+    {"id": 20, "name": "Pompadour1", "url": "ref_img/Pompadour1.jpg"},
+    {"id": 21, "name": "Ruffled", "url": "ref_img/Ruffled.jpg"}
+]
+# Khởi tạo model HairFast
+model_args = get_parser()
+print("check")
+hair_fast = HairFast(model_args.parse_args([]))
+router = APIRouter(prefix="/api")
+@router.get("/list_style_hair/")
+async def get_available_images():
+    return JSONResponse(content={"list_style_hair": list_style_hair})
+@router.get("/test")
+def get_test():
+    return "test"
+@router.post("/swap-hair/")
+async def swap_hair(face_image: UploadFile = File(...), image_name: int = Form(...)):
+    # Lưu file tải lên
+    face_path = f"customer/{face_image.filename}"
+    with open(face_path, "wb") as f:
+        f.write(await face_image.read())
+# # Kiểm tra ảnh trong danh sách có sẵn
+#     if image_name not in available_images:
+#         raise HTTPException(status_code=404, detail="Stored image not found in available images list")
+    # Đường dẫn ảnh mẫu có sẵn
+    # shape_path = f"./ref_img/{available_images[image_name]}" 
+    shape_path = list_style_hair[image_name]["url"]
+    color_path = shape_path
 
-    if all(path is not None for path in (args.face_path, args.shape_path, args.color_path)):
-        experiments.append((args.face_path, args.shape_path, args.color_path))
+    # Đường dẫn lưu kết quả
+    save_dir = "result"
+    Path(save_dir).mkdir(parents=True, exist_ok=True)
+    final_result_save_path = Path(save_dir) / f'{Path(face_path).stem}_final2.jpg'
 
-    for exp in tqdm(experiments):
-        if isinstance(exp, str):
-            file_1, file_2, file_3 = exp.split()
-        else:
-            file_1, file_2, file_3 = exp
+    # Thực hiện swap tóc
+    final_image, face_align, shape_align, color_align = hair_fast.swap(face_path, shape_path, color_path, align=True)
+    
+    # Chuyển đổi kết quả sang PIL.Image.Image
+    final_image_pil = T.functional.to_pil_image(final_image) if isinstance(final_image, torch.Tensor) else final_image
+    
+    # Lưu kết quả
+    final_image_pil.save(final_result_save_path, format='JPEG')
+    # # a = FileResponse(final_result_save_path)
+    # print(a) 
+    return FileResponse(final_result_save_path)
 
-        face_path = args.input_dir / file_1
-        shape_path = args.input_dir / file_2
-        color_path = args.input_dir / file_3
-
-        base_name = '_'.join([path.stem for path in (face_path, shape_path, color_path)])
-        exp_name = base_name if model_args.save_all else None
-
-        if isinstance(exp, str) or args.result_path is None:
-            os.makedirs(args.output_dir, exist_ok=True)
-            output_image_path = args.output_dir / f'{base_name}.png'
-        else:
-            os.makedirs(args.result_path.parent, exist_ok=True)
-            output_image_path = args.result_path
-
-        final_image = hair_fast.swap(face_path, shape_path, color_path, benchmark=args.benchmark, exp_name=exp_name)
-        save_image(final_image, output_image_path)
-
+app.include_router(router)
 
 if __name__ == "__main__":
-    model_parser = get_parser()
-    parser = argparse.ArgumentParser(description='HairFast evaluate')
-    parser.add_argument('--input_dir', type=Path, default='', help='The directory of the images to be inverted')
-    parser.add_argument('--benchmark', action='store_true', help='Calculates the speed of the method during the session')
-
-    # Arguments for a set of experiments
-    parser.add_argument('--file_path', type=Path, default=None,
-                        help='File with experiments with the format "face_path.png shape_path.png color_path.png"')
-    parser.add_argument('--output_dir', type=Path, default=Path('output'), help='The directory for final results')
-
-    # Arguments for single experiment
-    parser.add_argument('--face_path', type=Path, default=None, help='Path to the face image')
-    parser.add_argument('--shape_path', type=Path, default=None, help='Path to the shape image')
-    parser.add_argument('--color_path', type=Path, default=None, help='Path to the color image')
-    parser.add_argument('--result_path', type=Path, default=None, help='Path to save the result')
-
-    args, unknown1 = parser.parse_known_args()
-    model_args, unknown2 = model_parser.parse_known_args()
-
-    unknown_args = set(unknown1) & set(unknown2)
-    if unknown_args:
-        file_ = sys.stderr
-        print(f"Unknown arguments: {unknown_args}", file=file_)
-
-        print("\nExpected arguments for the model:", file=file_)
-        model_parser.print_help(file=file_)
-
-        print("\nExpected arguments for evaluate:", file=file_)
-        parser.print_help(file=file_)
-
-        sys.exit(1)
-
-    main(model_args, args)
+    # uvicorn.run("main:app", host="0.0.0.0", port=8080, reload = True)
+    uvicorn.run(app, host="0.0.0.0", port=8080)
